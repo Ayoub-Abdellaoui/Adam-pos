@@ -1,0 +1,1 @@
+ALTER TABLE `sale_lines` ADD `unitCost` decimal(12,2) DEFAULT '0.00' NOT NULL;

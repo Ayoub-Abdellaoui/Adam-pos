@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Cloud POS</string>
+    <string name="title_activity_main">Cloud POS</string>
+    <string name="package_name">com.adamstores.cloudpos</string>
+    <string name="custom_url_scheme">com.adamstores.cloudpos</string>
+</resources>

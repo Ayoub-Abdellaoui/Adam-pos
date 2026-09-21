@@ -1,0 +1,1 @@
+ALTER TABLE `customer_debt_transactions` MODIFY COLUMN `customer_debt_transaction_type` enum('payment','manual_debt','return_credit') NOT NULL;

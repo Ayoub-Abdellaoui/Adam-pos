@@ -1,0 +1,167 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1786580242158,
+      "tag": "0000_smiling_franklin_richards",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1786580604216,
+      "tag": "0001_conscious_living_mummy",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1786581777318,
+      "tag": "0002_woozy_the_hood",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1786586215807,
+      "tag": "0003_slow_nightshade",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1786657301720,
+      "tag": "0004_glorious_kylun",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1786751804123,
+      "tag": "0005_rapid_kulan_gath",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1786792542444,
+      "tag": "0006_calm_chronomancer",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1786798744577,
+      "tag": "0007_sparkling_lila_cheney",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1786804414927,
+      "tag": "0008_loud_gamma_corps",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1786806509978,
+      "tag": "0009_flimsy_gertrude_yorkes",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1786827272420,
+      "tag": "0010_vengeful_amphibian",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "5",
+      "when": 1786833197832,
+      "tag": "0011_many_sasquatch",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1787067444462,
+      "tag": "0012_polite_the_santerians",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1787070440554,
+      "tag": "0013_sharp_the_enforcers",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "5",
+      "when": 1787070474551,
+      "tag": "0014_slimy_red_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "5",
+      "when": 1787619808090,
+      "tag": "0015_cash_out_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "5",
+      "when": 1787685099664,
+      "tag": "0016_deep_sentry",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1787685673872,
+      "tag": "0017_narrow_molten_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1787689226989,
+      "tag": "0018_many_monster_badoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1787707600936,
+      "tag": "0020_invoice_margin_pricing",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1787737559557,
+      "tag": "0021_invoice_margin_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1787748302086,
+      "tag": "0022_customer_debt_transactions",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "5",
+      "when": 1787749625369,
+      "tag": "0023_customer_return_credit_type",
+      "breakpoints": true
+    }
+  ]
+}
