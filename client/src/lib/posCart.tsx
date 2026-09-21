@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, type ReactNode } from "react";
+import { getPosCartStorageKey } from "./posDevice";
 
 export const MAX_POS_CARTS = 5;
 
@@ -133,12 +134,10 @@ type PosCartContextValue = PosCartState & {
 };
 
 const PosCartContext = createContext<PosCartContextValue | null>(null);
-const POS_DRAFT_STORAGE_KEY = "cloud-pos:active-draft:v1";
-
 function loadPersistedPosCartState(): PosCartState {
   if (typeof window === "undefined") return createInitialPosCartState();
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(POS_DRAFT_STORAGE_KEY) ?? "null") as PosCartState | null;
+    const parsed = JSON.parse(window.localStorage.getItem(getPosCartStorageKey()) ?? "null") as PosCartState | null;
     if (parsed?.carts?.length && parsed.carts.some(cart => cart.id === parsed.activeCartId)) return parsed;
   } catch { /* Ignore corrupt local drafts and start a clean session. */ }
   return createInitialPosCartState();
@@ -147,7 +146,7 @@ function loadPersistedPosCartState(): PosCartState {
 export function PosCartProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(posCartReducer, undefined, loadPersistedPosCartState);
   useEffect(() => {
-    window.localStorage.setItem(POS_DRAFT_STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.setItem(getPosCartStorageKey(), JSON.stringify(state));
   }, [state]);
   const value = useMemo<PosCartContextValue>(() => {
     const activeCart = state.carts.find(cart => cart.id === state.activeCartId) ?? state.carts[0];

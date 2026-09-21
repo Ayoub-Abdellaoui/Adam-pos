@@ -158,6 +158,24 @@ describe("POS server safety", () => {
     expect(tx.update).toHaveBeenCalledTimes(1);
   });
 
+  it("auto-opens one cashier shift and links the sale when no shift is already open", async () => {
+    const shiftInsert = { values: vi.fn().mockResolvedValue([{ insertId: 201 }]) };
+    const saleInsert = { values: vi.fn().mockResolvedValue([{ insertId: 73 }]) };
+    const customLineInsert = { values: vi.fn().mockResolvedValue([{ insertId: 502 }]) };
+    const tx = {
+      select: vi.fn().mockReturnValueOnce(oneResult([])),
+      insert: vi.fn().mockReturnValueOnce(shiftInsert).mockReturnValueOnce(saleInsert).mockReturnValueOnce(customLineInsert),
+      update: vi.fn(() => ({ set: () => ({ where: () => Promise.resolve([{ affectedRows: 1 }]) }) })),
+    };
+    const db = { transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)) };
+    getDb.mockResolvedValue(db);
+
+    const caller = posRouter.createCaller(cashierContext);
+    await expect(caller.checkout({ paymentMethod: "cash", items: [{ customName: "Cashier service", customAmount: 25, quantity: 1, unitDiscount: 0 }] })).resolves.toMatchObject({ saleId: 73, total: "25.00" });
+    expect(shiftInsert.values).toHaveBeenCalledWith(expect.objectContaining({ storeId: 1, cashierUserId: 44, openedByUserId: 44, openingCash: "0.00", expectedCash: "0.00" }));
+    expect(saleInsert.values).toHaveBeenCalledWith(expect.objectContaining({ cashierUserId: 44, shiftId: 201 }));
+  });
+
   it("records a direct product return and restores the exact branch product quantity atomically", async () => {
     const product = { id: 9, storeId: 1, name: "Soft Cover Journal", quantityOnHand: 0, retailPrice: "7.50" };
     const directReturnInsert = { values: vi.fn().mockResolvedValue([{ insertId: 91 }]) };

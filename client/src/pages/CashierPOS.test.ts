@@ -21,7 +21,7 @@ describe("POS barcode feedback", () => {
     const source = readFileSync(new URL("./CashierPOS.tsx", import.meta.url), "utf8");
     expect(source).toContain("setLastReceipt({ ...receipt");
     expect(source).toContain("setShowReceipt(true)");
-    expect(source).toContain("<ThermalReceipt receipt={lastReceipt} onClose={() => setShowReceipt(false)} autoPrint />");
+    expect(source).toContain("<ThermalReceipt key={lastReceipt.receiptNumber} receipt={lastReceipt} onClose={() => setShowReceipt(false)} autoPrint />");
   });
 
   it("supports credit checkout with customer selection or inline profile creation and debt calculation", () => {
@@ -43,8 +43,8 @@ describe("POS barcode feedback", () => {
     expect(source).toContain("setQuantitySafely");
     expect(source).toContain("stockIndicator");
     expect(source).toContain("disabled={product.quantityOnHand <= 0}");
-    expect(source).toContain('cloud-pos:customer-draft:v1');
-    expect(cart).toContain('cloud-pos:active-draft:v1');
+    expect(source).toContain("getCustomerDraftStorageKey()");
+    expect(cart).toContain("getPosCartStorageKey()");
     expect(cart).toContain("maxStock");
   });
 
@@ -86,6 +86,36 @@ describe("POS barcode feedback", () => {
     expect(source).toContain("addBlankCustomService");
     expect(source).toContain("data-pos-custom-price=\"true\"");
     expect(source).toContain("Confirm payment · F4");
+  });
+
+  it("maps F4 to existing checkout without printing and F5 to existing receipt printing", () => {
+    const source = readFileSync(new URL("./CashierPOS.tsx", import.meta.url), "utf8");
+    expect(source).toContain('event.key === "F4"');
+    expect(source).toContain('event.key === "F5"');
+    expect(source).toContain("pay({ printAfterSuccess: false })");
+    expect(source).toContain("pay({ printAfterSuccess: true })");
+    expect(source).toContain("printAfterCheckoutRef.current = printAfterSuccess");
+    expect(source).toContain("if (printAfterCheckoutRef.current)");
+    expect(source).toContain("setShowReceipt(true)");
+    expect(source).not.toContain("suppressPrint");
+    expect(source).toContain('target?.matches("input, textarea, select, [contenteditable=\\"true\\"]")');
+  });
+
+  it("activates a mapped Quick Key button with the assigned product data", () => {
+    const source = readFileSync(new URL("./CashierPOS.tsx", import.meta.url), "utf8");
+    expect(source).toContain("onActivate={activateQuickKey}");
+    expect(source).toContain('role="button"');
+    expect(source).toContain("onActivate(mapping)");
+    expect(source).toContain("id: mapping.productId");
+    expect(source).toContain("quantityOnHand: mapping.quantityOnHand");
+    expect(source).toContain("retailPrice: mapping.retailPrice");
+  });
+
+  it("resolves keyboard Quick Keys from the full branch-scoped mappings", () => {
+    const source = readFileSync(new URL("./CashierPOS.tsx", import.meta.url), "utf8");
+    expect(source).toContain("const mapping = activeQuickKeys.find(item => item.keyCharacter === quickKey)");
+    expect(source).toContain("activateQuickKey(mapping)");
+    expect(source).not.toContain("quickKeyProducts.data?.find(item => item.id === productId)");
   });
 
   it("provides an isolated custom amount entry and serializes custom cart lines at checkout", () => {

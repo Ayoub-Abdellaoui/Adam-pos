@@ -49,12 +49,15 @@ describe("inventory authorization and commit boundary", () => {
     expect(getDb).not.toHaveBeenCalled();
   });
 
-  it("exposes only quantity adjustment to sellers while preserving full catalog restrictions", () => {
+  it("exposes creator-scoped product creation and editing while preserving catalog restrictions", () => {
     const source = readFileSync(new URL("./inventory.ts", import.meta.url), "utf8");
     expect(source).toContain('adjustQuantity: roleProcedure("admin", "cashier")');
-    expect(source).toContain('requireBranchRole(ctx.user, product.storeId, ["admin", "cashier"])');
+    expect(source).toContain("createdByUserId: products.createdByUserId");
+    expect(source).toContain("Cashiers may adjust stock only for products they created.");
     expect(source).toContain('set({ quantityOnHand: input.stockQuantity })');
-    expect(source).toContain('updateProduct: stockProcedure.input(updateProductInput)');
+    expect(source).toContain('createProduct: roleProcedure("admin", "cashier", "stock_manager")');
+    expect(source).toContain('updateProduct: roleProcedure("admin", "cashier", "stock_manager")');
+    expect(source).toContain("Cashiers may edit only products they created.");
   });
 
   it("returns only product name and stock quantity to a Cashier in the assigned branch", async () => {
@@ -72,20 +75,17 @@ describe("inventory authorization and commit boundary", () => {
     expect(source).toContain('like(barcodes.value');
   });
 
-  it("lets a Cashier cross the quantity-only mutation boundary but not full product editing", async () => {
+  it("denies a Cashier stock edits for a product created by another user", async () => {
     getDb.mockReset();
+    getDb.mockResolvedValue({ select: vi.fn(() => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 9, storeId: 1, createdByUserId: 77 }]) }) }) })) });
     const cashier = inventoryRouter.createCaller({ ...baseContext, user: { ...baseContext.user, role: "cashier", storeId: 1 } });
-    await expect(cashier.adjustQuantity({ productId: 9, stockQuantity: 12 })).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
-    expect(getDb).toHaveBeenCalled();
-    getDb.mockReset();
-    await expect(cashier.updateProduct({ productId: 9, name: "Restricted", sellingPrice: 10, purchasePrice: 5, stockQuantity: 12, barcodes: [] })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(getDb).not.toHaveBeenCalled();
+    await expect(cashier.adjustQuantity({ productId: 9, stockQuantity: 12 })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("blocks Cashiers from inventory mutation and Stock Managers from financial analytics", async () => {
+  it("blocks Cashiers from financial analytics and Stock Managers from financial analytics", async () => {
     getDb.mockReset();
     const cashier = inventoryRouter.createCaller({ ...baseContext, user: { ...baseContext.user, role: "cashier", storeId: 1 } });
-    await expect(cashier.createProduct({ storeId: 1, name: "Restricted", purchasePrice: 1, sellingPrice: 2, stockQuantity: 1, barcodes: ["1111111111111"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(cashier.analytics({})).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(getDb).not.toHaveBeenCalled();
     const stockManager = inventoryRouter.createCaller({ ...baseContext, user: { ...baseContext.user, role: "stock_manager", storeId: 1 } });
     await expect(stockManager.analytics({})).rejects.toMatchObject({ code: "FORBIDDEN" });

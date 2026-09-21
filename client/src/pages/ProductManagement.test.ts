@@ -22,11 +22,24 @@ describe("Product Management barcode labels", () => {
     expect(source).toContain("Stock quantity");
     expect(source).toContain("Primary barcode & additional barcodes");
     expect(source).toContain("Primary barcode");
-    expect(source).toContain("Add a primary barcode before saving a single product.");
+    expect(source).toContain("Set the required primary barcode above; then append any additional codes for this same product.");
     expect(source).toContain("Save Single Product");
     expect(source).toContain("createProduct.mutate({ storeId: Number(draft.storeId)");
     expect(source).toContain("SKU / Reference");
     expect(source).toContain("reference: draft.reference || undefined");
     expect(source).toContain("product.reference || product.sku || \"—\"");
+  });
+
+  it("does not update selection state when the catalog contains no invalid selections", () => {
+    const source = readFileSync(new URL("./ProductManagement.tsx", import.meta.url), "utf8");
+    expect(source).toContain("return next.length === current.length ? current : next");
+  });
+
+  it("keeps Cashier views branch-scoped and hides cost data for products they did not create", () => {
+    const source = readFileSync(new URL("./ProductManagement.tsx", import.meta.url), "utf8");
+    expect(source).toContain("createdByUserId: number | null");
+    expect(source).toContain("product.purchasePrice == null ? \"—\" : money(product.purchasePrice)");
+    expect(source).toContain("product.createdByUserId === user?.id");
+    expect(source).toContain("!isCashier &&");
   });
 });

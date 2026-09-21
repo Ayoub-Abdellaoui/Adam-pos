@@ -1,8 +1,8 @@
 {
   "version": "5",
   "dialect": "mysql",
-  "id": "1d27e440-639b-431d-91f9-92a9a702fe63",
-  "prevId": "22b5dbea-6763-461b-bfbe-f49d01504a0c",
+  "id": "d73454e8-5bf8-4165-8734-c62ba1f81f6b",
+  "prevId": "1d27e440-639b-431d-91f9-92a9a702fe63",
   "tables": {
     "barcodes": {
       "name": "barcodes",
@@ -1425,6 +1425,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "createdByUserId": {
+          "name": "createdByUserId",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "name": {
           "name": "name",
           "type": "varchar(255)",
@@ -1554,6 +1561,19 @@
             "id"
           ],
           "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "products_createdByUserId_users_id_fk": {
+          "name": "products_createdByUserId_users_id_fk",
+          "tableFrom": "products",
+          "tableTo": "users",
+          "columnsFrom": [
+            "createdByUserId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

@@ -100,7 +100,7 @@ export const posRouter = router({
       const storeId = resolvePosStore(ctx.user, input.previewStoreId);
       const db = await getDb();
       requireDatabase(db);
-      return db.select({ keyCharacter: quickKeys.keyCharacter, productId: quickKeys.productId, productName: products.name, sku: products.sku, barcode: barcodes.value })
+      return db.select({ keyCharacter: quickKeys.keyCharacter, productId: quickKeys.productId, productName: products.name, sku: products.sku, quantityOnHand: products.quantityOnHand, retailPrice: products.retailPrice, barcode: barcodes.value })
         .from(quickKeys)
         .innerJoin(products, eq(products.id, quickKeys.productId))
         .leftJoin(barcodes, eq(barcodes.productId, products.id))
@@ -247,11 +247,19 @@ export const posRouter = router({
     requireDatabase(db);
 
     return db.transaction(async tx => {
-      const [activeShift] = isCashierAtBranch(ctx.user, storeId)
+      let [activeShift] = isCashierAtBranch(ctx.user, storeId)
         ? await tx.select({ id: shifts.id }).from(shifts).where(and(eq(shifts.storeId, storeId), eq(shifts.cashierUserId, ctx.user.id), eq(shifts.status, "open"))).limit(1)
         : [];
       if (isCashierAtBranch(ctx.user, storeId) && !activeShift) {
-        throw new TRPCError({ code: "CONFLICT", message: "A supervisor must open your branch shift before checkout can be completed." });
+        const createdShift = await tx.insert(shifts).values({
+          storeId,
+          cashierUserId: ctx.user.id,
+          openedByUserId: ctx.user.id,
+          openingCash: "0.00",
+          expectedCash: "0.00",
+          notes: "Automatically opened for cashier checkout.",
+        });
+        activeShift = { id: Number(createdShift[0].insertId) };
       }
       let resolvedCustomerId = input.customerId ?? null;
       let resolvedCustomerName: string | null = null;

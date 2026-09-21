@@ -1,0 +1,2 @@
+ALTER TABLE `products` ADD `createdByUserId` int;--> statement-breakpoint
+ALTER TABLE `products` ADD CONSTRAINT `products_createdByUserId_users_id_fk` FOREIGN KEY (`createdByUserId`) REFERENCES `users`(`id`) ON DELETE set null ON UPDATE no action;

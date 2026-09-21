@@ -297,7 +297,7 @@ export const enterpriseRouter = router({
           if (target) {
             await tx.update(products).set({ quantityOnHand: sql`${products.quantityOnHand} + ${line.quantity}`, lastCostPrice: source.lastCostPrice, retailPrice: source.retailPrice }).where(eq(products.id, target.id));
           } else {
-            const created = await tx.insert(products).values({ storeId: input.targetStoreId, name: source.name, sku: source.sku, description: source.description, quantityOnHand: line.quantity, lastCostPrice: source.lastCostPrice, retailPrice: source.retailPrice });
+            const created = await tx.insert(products).values({ storeId: input.targetStoreId, createdByUserId: ctx.user.id, name: source.name, sku: source.sku, description: source.description, quantityOnHand: line.quantity, lastCostPrice: source.lastCostPrice, retailPrice: source.retailPrice });
             const targetProductId = Number(created[0].insertId);
             [target] = await tx.select().from(products).where(eq(products.id, targetProductId)).limit(1);
             const sourceBarcodes = await tx.select({ value: barcodes.value }).from(barcodes).where(eq(barcodes.productId, source.id));

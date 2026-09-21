@@ -64,7 +64,7 @@ function AdminProductsRoute() {
 function AdminBranchProductsRoute({ storeId }: { storeId: string }) {
   const { user } = useAuth();
   const parsedStoreId = Number(storeId);
-  return Number.isInteger(parsedStoreId) && parsedStoreId > 0 && hasBranchRole(user, parsedStoreId, ["admin", "stock_manager"]) ? <ProductManagement storeId={parsedStoreId} /> : <AccessDenied />;
+  return Number.isInteger(parsedStoreId) && parsedStoreId > 0 && hasBranchRole(user, parsedStoreId, ["admin", "cashier", "stock_manager"]) ? <ProductManagement storeId={parsedStoreId} /> : <AccessDenied />;
 }
 
 function BranchAvailableProductsRoute({ storeId }: { storeId: string }) {

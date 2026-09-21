@@ -31,6 +31,18 @@ describe("Product Catalog search and POS Quick Keys contracts", () => {
     expect(source).toContain("Start typing a product name or barcode to search the live catalog.");
     expect(source).toContain("quickKeyProductQuery");
   });
+
+  it("keeps the 26-product display limit out of Quick Key resolution", () => {
+    const cashierSource = readFileSync(new URL("./CashierPOS.tsx", import.meta.url), "utf8");
+    const routerSource = readFileSync(new URL("../../../server/routers/pos.ts", import.meta.url), "utf8");
+    const mappingQuery = routerSource.slice(routerSource.indexOf("quickKeyMappings:"), routerSource.indexOf("quickKeyProductSearch:"));
+    expect(cashierSource).toContain("const mapping = activeQuickKeys.find(item => item.keyCharacter === quickKey)");
+    expect(cashierSource).toContain("activateQuickKey(mapping)");
+    expect(mappingQuery).toContain("quickKeys.productId");
+    expect(mappingQuery).toContain("products.id");
+    expect(mappingQuery).not.toContain("slice(0, 26)");
+    expect(routerSource).toContain("return Array.from(catalog.values()).slice(0, 26);");
+  });
 });
 
 
@@ -48,6 +60,8 @@ describe("Quick Key backend validation", () => {
     expect(source).toContain("like(products.name");
     expect(source).toContain("like(barcodes.value");
     expect(source).toContain("requireBranchRole(ctx.user, storeId, [\"admin\"])");
+    expect(source).toContain("quantityOnHand: products.quantityOnHand");
+    expect(source).toContain("retailPrice: products.retailPrice");
   });
 });
 

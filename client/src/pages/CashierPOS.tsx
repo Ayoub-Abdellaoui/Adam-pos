@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { formatDZD } from "@/lib/currency";
 import { CartProduct, PosCartProvider, usePosCarts } from "@/lib/posCart";
+import { getCustomerDraftStorageKey } from "@/lib/posDevice";
 import { trpc } from "@/lib/trpc";
 import { ArchiveRestore, Banknote, Barcode, Camera, CheckCircle2, CircleDollarSign, ClipboardList, CreditCard, Keyboard, Loader2, Minus, PackageSearch, Pause, Pencil, Plus, ReceiptText, RotateCcw, ScanLine, Search, ShoppingCart, Trash2, X } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -24,7 +25,7 @@ import { useLocation } from "wouter";
 const currency = { format: formatDZD };
 // Legacy inline key controls intentionally render no characters; mapping administration lives in QuickKeyManagementCard.
 const QUICK_KEY_CHARACTERS: string[] = [];
-type QuickKeyMappingRow = { keyCharacter: string; productId: number; productName: string; sku: string | null; barcodes: string[] };
+type QuickKeyMappingRow = { keyCharacter: string; productId: number; productName: string; sku: string | null; quantityOnHand: number; retailPrice: string; barcodes: string[] };
 function stockIndicator(stock: number) { return stock <= 0 ? { key: "common.outOfStock", className: "text-red-500", card: "opacity-50 grayscale" } : stock <= 10 ? { key: "common.lowStock", className: "text-orange-500", card: "" } : { key: "common.inStock", className: "text-emerald-600 dark:text-emerald-400", card: "" }; }
 
 export function getPosBarcodeErrorMessage(error: unknown) {
@@ -88,13 +89,14 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
   const [quickKeyCharacter, setQuickKeyCharacter] = useState("");
   const [quickKeyProductQuery, setQuickKeyProductQuery] = useState("");
   const [quickKeySelectedProduct, setQuickKeySelectedProduct] = useState<{ id: number; name: string; sku: string | null; barcodes: string[] } | null>(null);
+  const printAfterCheckoutRef = useRef(true);
   const quickKeyMappings = trpc.pos.quickKeyMappings.useQuery(posScope, { enabled: Boolean(activeStore) });
   const setQuickKeyMutation = trpc.pos.setQuickKey.useMutation({ onSuccess: () => { void utils.pos.quickKeyMappings.invalidate(posScope); }, onError: error => toast.error(error.message) });
   const quickKeyMapping = useMemo(() => Object.fromEntries((quickKeyMappings.data ?? []).map(mapping => [mapping.keyCharacter, mapping.productId])) as Record<string, number>, [quickKeyMappings.data]);
   const activeQuickKeys = useMemo(() => {
     const grouped = new Map<string, QuickKeyMappingRow>();
     for (const mapping of quickKeyMappings.data ?? []) {
-      const current = grouped.get(mapping.keyCharacter) ?? { keyCharacter: mapping.keyCharacter, productId: mapping.productId, productName: mapping.productName, sku: mapping.sku, barcodes: [] };
+      const current = grouped.get(mapping.keyCharacter) ?? { keyCharacter: mapping.keyCharacter, productId: mapping.productId, productName: mapping.productName, sku: mapping.sku, quantityOnHand: mapping.quantityOnHand, retailPrice: mapping.retailPrice, barcodes: [] };
       if (mapping.barcode && !current.barcodes.includes(mapping.barcode)) current.barcodes.push(mapping.barcode);
       grouped.set(mapping.keyCharacter, current);
     }
@@ -141,7 +143,7 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
 
   useEffect(() => {
     try {
-      const saved = JSON.parse(window.localStorage.getItem("cloud-pos:customer-draft:v1") ?? "null") as { customerSearch?: string; customerId?: string; creditFirstName?: string; creditLastName?: string; creditPhone?: string; amountPaidNow?: string } | null;
+      const saved = JSON.parse(window.localStorage.getItem(getCustomerDraftStorageKey()) ?? "null") as { customerSearch?: string; customerId?: string; creditFirstName?: string; creditLastName?: string; creditPhone?: string; amountPaidNow?: string } | null;
       if (saved) {
         setCustomerSearch(saved.customerSearch ?? ""); setCustomerId(saved.customerId ?? ""); setCreditFirstName(saved.creditFirstName ?? ""); setCreditLastName(saved.creditLastName ?? ""); setCreditPhone(saved.creditPhone ?? ""); setAmountPaidNow(saved.amountPaidNow ?? "");
       }
@@ -149,7 +151,7 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("cloud-pos:customer-draft:v1", JSON.stringify({ customerSearch, customerId, creditFirstName, creditLastName, creditPhone, amountPaidNow }));
+    window.localStorage.setItem(getCustomerDraftStorageKey(), JSON.stringify({ customerSearch, customerId, creditFirstName, creditLastName, creditPhone, amountPaidNow }));
   }, [amountPaidNow, creditFirstName, creditLastName, creditPhone, customerId, customerSearch]);
 
   useEffect(() => {
@@ -167,6 +169,12 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
     addProduct(product);
     return true;
   }, [activeCart.lines, addProduct]);
+
+  const activateQuickKey = useCallback((mapping: QuickKeyMappingRow) => {
+    if (addProductSafely({ id: mapping.productId, name: mapping.productName, quantityOnHand: mapping.quantityOnHand, retailPrice: mapping.retailPrice, barcode: mapping.barcodes[0] ?? "" })) {
+      toast.success(`${mapping.productName} added.`, { duration: 900 });
+    }
+  }, [addProductSafely]);
 
   const setQuantitySafely = useCallback((productId: number, quantity: number) => {
     const line = activeCart.lines.find(item => item.productId === productId);
@@ -234,8 +242,10 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
 
   const checkout = trpc.pos.checkout.useMutation({
     onSuccess: receipt => {
-      setLastReceipt({ ...receipt, storeName: activeStore?.name ?? "Selected branch", cashierName: user?.name ?? "Cashier", createdAt: new Date().toISOString() });
-      setShowReceipt(true);
+      if (printAfterCheckoutRef.current) {
+        setLastReceipt({ ...receipt, storeName: activeStore?.name ?? "Selected branch", cashierName: user?.name ?? "Cashier", createdAt: new Date().toISOString() });
+        setShowReceipt(true);
+      }
       completeActive();
       toast.success(`Payment complete · ${receipt.receiptNumber}`);
     },
@@ -267,12 +277,13 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
     if (!createCart()) toast.error("The queue already has five active carts. Complete or clear one before opening another.");
   };
 
-  const pay = () => {
+  const pay = ({ printAfterSuccess = true }: { printAfterSuccess?: boolean } = {}) => {
     if (activeCart.lines.length === 0) return toast.error("Scan at least one item before checking out.");
     if (activeCart.lines.some(line => line.isCustom && line.unitPrice <= 0)) return toast.error("Enter a price for every custom service item before checkout.");
     if (paymentMethod === "credit" && !customerId && (!creditFirstName.trim() || !creditLastName.trim() || !creditPhone.trim())) return toast.error("Select a customer or enter first name, last name, and phone.");
     const paidNow = paymentMethod === "credit" ? Number(amountPaidNow || 0) : totals.total;
     if (!Number.isFinite(paidNow) || paidNow < 0 || paidNow > totals.total) return toast.error("Amount paid now must be between 0 and the invoice total.");
+    printAfterCheckoutRef.current = printAfterSuccess;
     setPaymentModalOpen(false);
     checkout.mutate({ paymentMethod, amountPaidNow: paidNow, ...posScope, ...(customerId ? { customerId: Number(customerId) } : {}), ...(paymentMethod === "credit" && !customerId ? { creditCustomer: { firstName: creditFirstName, lastName: creditLastName, phone: creditPhone } } : {}), items: activeCart.lines.map(line => line.isCustom ? ({ customName: line.productName, customAmount: line.unitPrice, quantity: line.quantity, unitDiscount: line.unitDiscount }) : ({ productId: line.productId, quantity: line.quantity, unitDiscount: line.unitDiscount })) });
   };
@@ -296,8 +307,15 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
       const target = event.target as HTMLElement | null;
       const isTyping = target?.matches("input, textarea, select, [contenteditable=\"true\"]");
       if (event.key === "F4") {
+        if (isTyping || event.repeat) return;
         event.preventDefault();
-        if (paymentModalOpen) pay(); else setPaymentModalOpen(true);
+        pay({ printAfterSuccess: false });
+        return;
+      }
+      if (event.key === "F5") {
+        if (isTyping || event.repeat) return;
+        event.preventDefault();
+        pay({ printAfterSuccess: true });
         return;
       }
       if (event.key === "F2") {
@@ -314,16 +332,15 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
       }
       if (isTyping || event.repeat || event.key.length !== 1) return;
       const quickKey = event.key.toUpperCase();
-      const productId = quickKeyMapping[quickKey];
-      const product = quickKeyProducts.data?.find(item => item.id === productId);
-      if (product) {
+      const mapping = activeQuickKeys.find(item => item.keyCharacter === quickKey);
+      if (mapping) {
         event.preventDefault();
-        if (addProductSafely(product)) toast.success(`${product.name} added.`, { duration: 900 });
+        activateQuickKey(mapping);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeCart.id, addProductSafely, pay, paymentModalOpen, quickKeyMapping, quickKeyProducts.data, toggleHold]);
+  }, [activeCart.id, activateQuickKey, activeQuickKeys, pay, toggleHold]);
 
   if (workspace.isLoading || (adminPreview && previewDashboard.isLoading)) return <Skeleton className="h-[72vh] rounded-[1.5rem]" />;
   if (!activeStore) return <div className="mx-auto flex min-h-[62vh] max-w-xl items-center"><Card className="w-full border-0 bg-card dark:bg-gray-800 shadow-[0_20px_55px_-32px_rgba(18,36,30,.35)]"><CardHeader><CardTitle className="font-display text-2xl">{adminPreview ? t("pos.selectBranch") : "Your branch workspace is unavailable"}</CardTitle></CardHeader><CardContent>{adminPreview ? <><p className="mb-5 text-sm leading-6 text-muted-foreground">{t("pos.selectBranchDetail")}</p><Select value={previewStoreId} onValueChange={setPreviewStoreId}><SelectTrigger><SelectValue placeholder={t("dashboard.branch")} /></SelectTrigger><SelectContent>{previewDashboard.data?.branches.map(store => <SelectItem key={store.id} value={String(store.id)}>{store.name}</SelectItem>)}</SelectContent></Select></> : <p className="text-sm text-muted-foreground">Ask an administrator to assign your cashier account to a branch.</p>}</CardContent></Card></div>;
@@ -335,7 +352,7 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
     </header>
 
     {canRecordCashOut && <div className="flex justify-end"><Button type="button" onClick={() => setCashOutOpen(true)} className="bg-rose-600 text-white hover:bg-rose-700"><CircleDollarSign className="me-2 h-4 w-4" /> {t("cashOut.action")}</Button></div>}
-    <QuickKeyManagementCard mappings={activeQuickKeys} loading={quickKeyMappings.isLoading} canEdit={canEditQuickKeys} saving={setQuickKeyMutation.isPending} onAdd={() => openQuickKeyDialog()} onEdit={openQuickKeyDialog} onDelete={deleteQuickKey} />
+    <QuickKeyManagementCard mappings={activeQuickKeys} loading={quickKeyMappings.isLoading} canEdit={canEditQuickKeys} saving={setQuickKeyMutation.isPending} onAdd={() => openQuickKeyDialog()} onEdit={openQuickKeyDialog} onDelete={deleteQuickKey} onActivate={activateQuickKey} />
 
     {lastReceipt && <div className="flex flex-col gap-2 rounded-2xl border border-[#cce4c8] bg-muted dark:bg-gray-800 px-4 py-3 text-sm text-[#32683a] sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4" /><span><strong>Payment complete.</strong> Receipt <span className="font-mono">{lastReceipt.receiptNumber}</span> · {currency.format(Number(lastReceipt.total))}</span></div><button className="text-xs font-semibold hover:underline" onClick={() => setLastReceipt(null)}>Dismiss</button></div>}
     {user?.role === "supervisor" && <Card className="border-[#d9e6d5] bg-[#f4f8ef]"><CardContent className="flex flex-wrap items-center gap-x-7 gap-y-2 p-4 text-sm"><span className="font-semibold text-foreground dark:text-gray-100">Today’s shift summary</span><span><strong className="font-mono text-foreground dark:text-gray-200">{shiftSummary.data?.transactionCount ?? 0}</strong> transactions</span><span><strong className="font-mono text-foreground dark:text-gray-200">{shiftSummary.data?.itemsSold ?? 0}</strong> items</span><span><strong className="font-mono text-foreground dark:text-gray-100">{currency.format(Number(shiftSummary.data?.salesTotal ?? 0))}</strong> sales</span></CardContent></Card>}
@@ -363,7 +380,7 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
     <Dialog open={Boolean(stockAdjustmentProduct)} onOpenChange={open => { if (!open) { setStockAdjustmentProduct(null); setStockAdjustmentQuantity(""); } }}><DialogContent className="max-w-sm"><DialogHeader><DialogTitle>Adjust stock quantity</DialogTitle><DialogDescription>Update quantity only for {stockAdjustmentProduct?.name ?? "this product"}. Product details and prices cannot be changed here.</DialogDescription></DialogHeader><div className="space-y-3"><Label htmlFor="stock-adjustment-quantity">Quantity on hand</Label><Input id="stock-adjustment-quantity" type="number" min="0" max="1000000" step="1" value={stockAdjustmentQuantity} onChange={event => setStockAdjustmentQuantity(event.target.value)} /><Button type="button" className="w-full" disabled={!stockAdjustmentProduct || adjustQuantity.isPending || !/^\d+$/.test(stockAdjustmentQuantity)} onClick={() => stockAdjustmentProduct && adjustQuantity.mutate({ productId: stockAdjustmentProduct.id, stockQuantity: Number(stockAdjustmentQuantity) })}>{adjustQuantity.isPending ? "Saving…" : "Save quantity"}</Button></div></DialogContent></Dialog>
     <Dialog open={paymentModalOpen} onOpenChange={setPaymentModalOpen}><DialogContent className="max-w-md"><DialogHeader><DialogTitle>Confirm checkout</DialogTitle><DialogDescription>Review the total and press F4 again or confirm payment to finalize this sale.</DialogDescription></DialogHeader><div className="space-y-4"><div className="rounded-xl bg-muted p-4 text-center dark:bg-gray-800"><p className="text-xs uppercase tracking-wide text-muted-foreground">Total</p><p className="mt-1 font-mono text-3xl font-bold text-foreground dark:text-white">{currency.format(totals.total)}</p></div>{paymentMethod === "credit" && <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/40"><p className="text-sm font-semibold text-amber-900 dark:text-amber-100">Customer Credit</p>{customerId ? <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"><span>Selected customer: {customerSearch}</span><Button type="button" variant="ghost" size="sm" onClick={() => { setCustomerId(""); setCustomerSearch(""); }}>Change</Button></div> : <div className="space-y-2"><div><Label className="text-amber-900 dark:text-amber-100">Existing customer</Label><Input value={customerSearch} onChange={event => { setCustomerSearch(event.target.value); setCustomerId(""); }} placeholder="Search name or phone" className="mt-1 bg-card dark:bg-gray-800" autoComplete="off" />{customerSearch && <div className="mt-1 max-h-28 overflow-y-auto rounded-lg border border-amber-200 bg-card dark:bg-gray-800">{customerMatches.data?.map(customer => <button key={customer.id} type="button" onClick={() => { setCustomerId(String(customer.id)); setCustomerSearch(`${customer.name} · ${customer.phone}`); }} className="block w-full border-b border-border px-2 py-1.5 text-start text-xs last:border-b-0 hover:bg-amber-50 dark:hover:bg-amber-900/30"><strong>{customer.name}</strong> · {customer.phone}</button>)}{!customerMatches.data?.length && <p className="px-2 py-2 text-xs text-muted-foreground">No registered customer found. Add a new customer below.</p>}</div>}</div><p className="text-xs font-semibold text-amber-900 dark:text-amber-100">Or add a new customer</p><div className="grid gap-2 sm:grid-cols-2"><Input placeholder="First name" value={creditFirstName} onChange={event => setCreditFirstName(event.target.value)} /><Input placeholder="Last name" value={creditLastName} onChange={event => setCreditLastName(event.target.value)} /><Input className="sm:col-span-2" placeholder="Phone number" value={creditPhone} onChange={event => setCreditPhone(event.target.value)} /></div></div>}<Label className="text-amber-900 dark:text-amber-100">Amount Paid Now</Label><Input type="number" min="0" max={totals.total} step="0.01" value={amountPaidNow} onChange={event => setAmountPaidNow(event.target.value)} placeholder="0.00 DZD" /><p className="text-sm font-bold text-amber-900 dark:text-amber-100">Invoice Debt: {currency.format(Math.max(0, totals.total - Number(amountPaidNow || 0)))}</p></div>}<Button onClick={pay} disabled={checkout.isPending || !activeCart.lines.length} className="h-12 w-full"><CheckCircle2 className="me-2 h-4 w-4" /> {checkout.isPending ? "Finalizing…" : "Confirm payment · F4"}</Button></div></DialogContent></Dialog>
     <Dialog open={quickKeyDialogOpen} onOpenChange={setQuickKeyDialogOpen}><DialogContent className="max-w-lg"><DialogHeader><DialogTitle>{quickKeyOriginalCharacter ? `Edit Quick Key ${quickKeyOriginalCharacter}` : "Add New Shortcut"}</DialogTitle><DialogDescription>{quickKeyOriginalCharacter ? "Choose the product that should respond to this active keyboard shortcut." : "Assign one available letter or number to a product in this branch."}</DialogDescription></DialogHeader><div className="space-y-5"><div><Label htmlFor="quick-key-character" className="mb-1.5 block">Shortcut character</Label><Input id="quick-key-character" value={quickKeyCharacter} onChange={event => setQuickKeyCharacter(event.target.value.toUpperCase().slice(0, 1))} disabled={Boolean(quickKeyOriginalCharacter)} placeholder="A–Z or 0–9" className="max-w-40 font-mono uppercase" aria-invalid={quickKeyCharacterInvalid || quickKeyCharacterConflict} />{quickKeyCharacterInvalid && <p className="mt-1.5 text-xs font-medium text-destructive">Use exactly one letter (A–Z) or number (0–9).</p>}{quickKeyCharacterConflict && <p className="mt-1.5 text-xs font-medium text-destructive">This character already has an active shortcut.</p>}{quickKeyOriginalCharacter && <p className="mt-1.5 text-xs text-muted-foreground">To use another character, delete this mapping and create a new one.</p>}</div><div><Label htmlFor="quick-key-product-search" className="mb-1.5 block">Find product by name or barcode</Label><div className="relative"><Search className="pointer-events-none absolute start-3 top-3 h-4 w-4 text-muted-foreground" /><Input id="quick-key-product-search" value={quickKeyProductQuery} onChange={event => { setQuickKeyProductQuery(event.target.value); setQuickKeySelectedProduct(null); }} placeholder="Type product name or scan/type barcode" className="ps-9" autoComplete="off" /></div><div className="mt-2 max-h-56 overflow-y-auto rounded-xl border border-border bg-popover text-popover-foreground shadow-sm dark:bg-slate-900">{quickKeyProductQuery.trim() ? quickKeyProductSearch.isFetching ? <div className="flex items-center gap-2 px-3 py-3 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Searching products…</div> : quickKeyProductSearch.data?.length ? quickKeyProductSearch.data.map(product => <button key={product.id} type="button" onClick={() => { setQuickKeySelectedProduct(product); setQuickKeyProductQuery(product.name); }} className={`block w-full border-b border-border px-3 py-2.5 text-start transition-colors last:border-b-0 hover:bg-muted ${quickKeySelectedProduct?.id === product.id ? "bg-primary/10" : ""}`}><span className="block text-sm font-semibold text-foreground dark:text-white">{product.name}</span><span className="mt-0.5 block font-mono text-xs text-muted-foreground">{product.sku ? `SKU: ${product.sku}` : "No SKU"}{product.barcodes.length ? ` · ${product.barcodes.join(", ")}` : ""}</span></button>) : <p className="px-3 py-3 text-sm text-muted-foreground">No matching products in this branch.</p> : <p className="px-3 py-3 text-sm text-muted-foreground">Start typing a product name or barcode to search the live catalog.</p>}</div></div>{quickKeySelectedProduct && <div className="rounded-xl border border-primary/20 bg-primary/5 p-3"><p className="text-xs font-bold uppercase tracking-wide text-primary">Selected product</p><p className="mt-1 font-semibold text-foreground dark:text-white">{quickKeySelectedProduct.name}</p><p className="mt-0.5 font-mono text-xs text-muted-foreground">{quickKeySelectedProduct.sku ? `SKU: ${quickKeySelectedProduct.sku}` : "No SKU"}{quickKeySelectedProduct.barcodes.length ? ` · ${quickKeySelectedProduct.barcodes.join(", ")}` : ""}</p></div>}<div className="flex justify-end gap-2 border-t border-border pt-4"><Button type="button" variant="outline" onClick={() => setQuickKeyDialogOpen(false)}>Cancel</Button><Button type="button" onClick={saveQuickKey} disabled={setQuickKeyMutation.isPending || !quickKeySelectedProduct || !normalizedQuickKeyCharacter || quickKeyCharacterInvalid || quickKeyCharacterConflict}>{setQuickKeyMutation.isPending ? <Loader2 className="me-2 h-4 w-4 animate-spin" /> : <Keyboard className="me-2 h-4 w-4" />}Save shortcut</Button></div></div></DialogContent></Dialog>
-    {showReceipt && lastReceipt && <ThermalReceipt receipt={lastReceipt} onClose={() => setShowReceipt(false)} autoPrint />}
+    {showReceipt && lastReceipt && <ThermalReceipt key={lastReceipt.receiptNumber} receipt={lastReceipt} onClose={() => setShowReceipt(false)} autoPrint />}
     {activeStore && <CashOutDialog open={cashOutOpen} onOpenChange={setCashOutOpen} branches={[{ id: activeStore.id, name: activeStore.name }]} initialStoreId={activeStore.id} />}
     <CameraBarcodeScanner open={cameraScannerOpen} onOpenChange={setCameraScannerOpen} continuous={continuousCameraScanning} onContinuousChange={setContinuousCameraScanning} title="Mobile POS scanner" description="Tap Start Camera to begin scanning product barcodes. Continuous mode keeps the camera ready for the next item." onDetected={handleScannerRead} />
   </div>;
@@ -371,7 +388,7 @@ function CashierTerminal({ adminPreview = false, branchStoreId }: { adminPreview
 
 function TotalRow({ label, amount, strong = false, className = "" }: { label: string; amount: number; strong?: boolean; className?: string }) { return <div className={`flex items-center justify-between ${strong ? "font-display text-xl font-bold text-foreground dark:text-white" : "text-muted-foreground"} ${className}`}><span>{label}</span><span className="font-mono">{currency.format(amount)}</span></div>; }
 
-function QuickKeyManagementCard({ mappings, loading, canEdit, saving, onAdd, onEdit, onDelete }: { mappings: QuickKeyMappingRow[]; loading: boolean; canEdit: boolean; saving: boolean; onAdd: () => void; onEdit: (mapping: QuickKeyMappingRow) => void; onDelete: (keyCharacter: string) => void }) {
+function QuickKeyManagementCard({ mappings, loading, canEdit, saving, onAdd, onEdit, onDelete, onActivate }: { mappings: QuickKeyMappingRow[]; loading: boolean; canEdit: boolean; saving: boolean; onAdd: () => void; onEdit: (mapping: QuickKeyMappingRow) => void; onDelete: (keyCharacter: string) => void; onActivate: (mapping: QuickKeyMappingRow) => void }) {
   const [showAll, setShowAll] = useState(false);
   const visibleMappings = showAll ? mappings : mappings.slice(0, 5);
 
@@ -382,10 +399,10 @@ function QuickKeyManagementCard({ mappings, loading, canEdit, saving, onAdd, onE
     </CardHeader>
     <CardContent className="p-3">
       {loading ? <div className="p-2"><Skeleton className="h-12 w-full" /></div> : mappings.length ? <div className="flex flex-nowrap items-center gap-2 overflow-x-auto">
-        {visibleMappings.map(mapping => <div key={mapping.keyCharacter} className="flex min-w-[210px] shrink-0 items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5 py-2 dark:bg-gray-900/40">
-          <kbd className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 font-mono text-sm font-bold text-primary">{mapping.keyCharacter}</kbd>
+        {visibleMappings.map(mapping => <div key={mapping.keyCharacter} role="button" tabIndex={mapping.quantityOnHand > 0 ? 0 : -1} onClick={() => mapping.quantityOnHand > 0 && onActivate(mapping)} onKeyDown={event => { if ((event.key === "Enter" || event.key === " ") && mapping.quantityOnHand > 0) { event.preventDefault(); onActivate(mapping); } }} aria-label={`Add ${mapping.productName} with Quick Key ${mapping.keyCharacter}`} className="flex min-w-[210px] shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5 py-2 text-start transition-colors hover:bg-muted dark:bg-gray-900/40">
+          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 font-mono text-sm font-bold text-primary ${mapping.quantityOnHand <= 0 ? "opacity-50" : ""}`}>{mapping.keyCharacter}</span>
           <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-foreground dark:text-white">{mapping.productName}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{mapping.sku ? `SKU: ${mapping.sku}` : "No SKU"}{mapping.barcodes.length ? ` · ${mapping.barcodes.join(", ")}` : ""}</p></div>
-          {canEdit && <div className="flex shrink-0 gap-1"><Button type="button" size="icon" variant="ghost" onClick={() => onEdit(mapping)} disabled={saving} aria-label={`Edit Quick Key ${mapping.keyCharacter}`} className="h-7 w-7"><Pencil className="h-3.5 w-3.5" /></Button><Button type="button" size="icon" variant="ghost" onClick={() => onDelete(mapping.keyCharacter)} disabled={saving} aria-label={`Delete Quick Key ${mapping.keyCharacter}`} className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /></Button></div>}
+          {canEdit && <div className="flex shrink-0 gap-1"><Button type="button" size="icon" variant="ghost" onClick={event => { event.stopPropagation(); onEdit(mapping); }} disabled={saving} aria-label={`Edit Quick Key ${mapping.keyCharacter}`} className="h-7 w-7"><Pencil className="h-3.5 w-3.5" /></Button><Button type="button" size="icon" variant="ghost" onClick={event => { event.stopPropagation(); onDelete(mapping.keyCharacter); }} disabled={saving} aria-label={`Delete Quick Key ${mapping.keyCharacter}`} className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /></Button></div>}
         </div>)}
         {mappings.length > 5 && <Button type="button" variant="ghost" size="sm" onClick={() => setShowAll(current => !current)} aria-expanded={showAll} className="shrink-0 whitespace-nowrap text-xs">{showAll ? "عرض أقل" : "Show More / عرض المزيد"}</Button>}
       </div> : <div className="px-2 py-5 text-center"><Keyboard className="mx-auto h-8 w-8 text-muted-foreground" /><p className="mt-2 font-semibold text-foreground dark:text-white">No shortcuts configured</p><p className="mt-1 text-sm text-muted-foreground">Add only the keys your cashiers need; they sync immediately across devices.</p>{canEdit && <Button type="button" className="mt-4" onClick={onAdd}><Plus className="me-2 h-4 w-4" />Add New Shortcut</Button>}</div>}

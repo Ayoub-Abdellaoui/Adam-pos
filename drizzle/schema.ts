@@ -106,6 +106,7 @@ export const products = mysqlTable(
   {
     id: int("id").autoincrement().primaryKey(),
     storeId: int("storeId").notNull().references(() => stores.id, { onDelete: "restrict" }),
+    createdByUserId: int("createdByUserId").references(() => users.id, { onDelete: "set null" }),
     name: varchar("name", { length: 255 }).notNull(),
     sku: varchar("sku", { length: 128 }),
     reference: varchar("reference", { length: 128 }),
@@ -125,6 +126,20 @@ export const products = mysqlTable(
     uniqueIndex("products_store_name_unique").on(table.storeId, table.name),
     index("products_store_idx").on(table.storeId),
   ]
+);
+
+/** Durable, non-inventory product drafts owned by one user in one branch. */
+export const productDrafts = mysqlTable(
+  "product_drafts",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+    storeId: int("storeId").notNull().references(() => stores.id, { onDelete: "cascade" }),
+    payload: longtext("payload").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [uniqueIndex("product_drafts_user_store_unique").on(table.userId, table.storeId), index("product_drafts_user_updated_idx").on(table.userId, table.updatedAt)]
 );
 
 /** A product may have multiple supplier, packaging, or legacy scanner barcodes. */

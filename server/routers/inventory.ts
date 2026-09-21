@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { randomInt, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, like, lt, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
-import { barcodes, invoiceExceptionDecisions, invoiceReviewSessions, invoices, operationalExpenses, products, returnLines, saleLines, saleReturns, sales, stockEntries, stores, supplierInvoiceLines, supplierInvoicePayments, supplierPaymentAllocations, supplierPayments, suppliers, users } from "../../drizzle/schema";
+import { barcodes, invoiceExceptionDecisions, invoiceReviewSessions, invoices, operationalExpenses, productDrafts, products, returnLines, saleLines, saleReturns, sales, stockEntries, stores, supplierInvoiceLines, supplierInvoicePayments, supplierPaymentAllocations, supplierPayments, suppliers, users } from "../../drizzle/schema";
 import { calculateAnalytics } from "../analytics";
 import { ensureRetailBranches, getDb } from "../db";
 import { invoiceExtractionSchema, parseInvoiceWithVision, permittedInvoiceMimeTypes } from "../invoiceParser";
@@ -59,6 +59,9 @@ const analyticsInput = z.object({
   lowStockThreshold: z.number().int().min(0).max(10_000).default(5),
 });
 const optionalInventoryStoreScope = z.object({ storeId: z.number().int().positive() }).optional();
+const productCatalogInput = z.object({ storeId: z.number().int().positive().optional(), page: z.number().int().positive().default(1), pageSize: z.number().int().min(10).max(100).default(25), search: z.string().trim().max(120).default("") });
+const productDraftPayload = z.object({ storeId: z.string(), name: z.string(), sku: z.string(), reference: z.string(), category: z.string(), variations: z.string(), purchasePrice: z.string(), sellingPrice: z.string(), stockQuantity: z.string(), barcodes: z.array(z.string()).max(50) });
+const saveProductDraftInput = z.object({ storeId: z.number().int().positive(), payload: productDraftPayload });
 
 const productDetailsSchema = z.object({
   name: z.string().trim().min(1).max(255),
@@ -95,12 +98,12 @@ function asMarginPercent(costPrice: number, sellingPrice: number): string {
   return (((sellingPrice - costPrice) / costPrice) * 100).toFixed(2);
 }
 
-function resolveInventoryStore(user: Parameters<typeof requireBranchRole>[0], requestedStoreId?: number) {
+function resolveInventoryStore(user: Parameters<typeof requireBranchRole>[0], requestedStoreId?: number, roles: Array<"admin" | "cashier" | "stock_manager"> = ["admin", "stock_manager"]) {
   if (isSuperAdmin(user)) return requestedStoreId;
-  const allowedStores = assignedStoresForRoles(user, ["admin", "stock_manager"]);
+  const allowedStores = assignedStoresForRoles(user, roles);
   const storeId = requestedStoreId ?? (allowedStores.length === 1 ? allowedStores[0] : undefined);
   if (!storeId) throw new TRPCError({ code: "BAD_REQUEST", message: "Select an inventory branch before continuing." });
-  requireBranchRole(user, storeId, ["admin", "stock_manager"]);
+  requireBranchRole(user, storeId, roles);
   return storeId;
 }
 
@@ -182,14 +185,21 @@ export const inventoryRouter = router({
     return Array.from(catalog.values());
   }),
 
-  /** Complete admin catalog. Barcodes are grouped into an array while remaining normalized in storage. */
-  productCatalog: stockProcedure.input(optionalInventoryStoreScope).query(async ({ ctx, input }) => {
+  /** Paginated catalog. Barcodes are grouped while the database does the filtering and page slicing. */
+  productCatalog: roleProcedure("admin", "cashier", "stock_manager").input(productCatalogInput).query(async ({ ctx, input }) => {
     await ensureRetailBranches();
     const db = await getDb();
     requireDatabase(db);
-    const scopedStoreId = resolveInventoryStore(ctx.user, input?.storeId);
-
-    const storeQuery = db.select({ id: stores.id, name: stores.name }).from(stores);
+    const scopedStoreId = resolveInventoryStore(ctx.user, input.storeId, ["admin", "cashier", "stock_manager"]);
+    const activeRole = isSuperAdmin(ctx.user) ? "super_admin" : (scopedStoreId ? requireBranchRole(ctx.user, scopedStoreId, ["admin", "cashier", "stock_manager"]) : undefined);
+    const canViewFinancials = activeRole !== "cashier";
+    const search = input.search.trim();
+    const searchMatch = search ? or(like(products.name, `%${search}%`), like(products.sku, `%${search}%`), like(products.reference, `%${search}%`), like(products.category, `%${search}%`), like(products.variations, `%${search}%`), like(barcodes.value, `%${search}%`)) : undefined;
+    const conditions = [
+      ...(scopedStoreId ? [eq(products.storeId, scopedStoreId)] : []),
+      ...(activeRole === "cashier" ? [eq(products.createdByUserId, ctx.user.id)] : []),
+      ...(searchMatch ? [searchMatch] : []),
+    ];
     const productQuery = db
       .select({
         id: products.id,
@@ -200,6 +210,7 @@ export const inventoryRouter = router({
         variations: products.variations,
         storeId: products.storeId,
         storeName: stores.name,
+        createdByUserId: products.createdByUserId,
         purchasePrice: products.lastCostPrice,
         sellingPrice: products.retailPrice,
         stockQuantity: products.quantityOnHand,
@@ -208,12 +219,11 @@ export const inventoryRouter = router({
       .from(products)
       .innerJoin(stores, eq(products.storeId, stores.id))
       .leftJoin(barcodes, eq(barcodes.productId, products.id));
-    const [storeRows, rows] = await Promise.all([
-      scopedStoreId ? storeQuery.where(eq(stores.id, scopedStoreId)).orderBy(asc(stores.name)) : storeQuery.orderBy(asc(stores.name)),
-      scopedStoreId ? productQuery.where(eq(products.storeId, scopedStoreId)).orderBy(asc(stores.name), asc(products.name)) : productQuery.orderBy(asc(stores.name), asc(products.name)),
-    ]);
+    const storeRows = scopedStoreId ? await db.select({ id: stores.id, name: stores.name }).from(stores).where(eq(stores.id, scopedStoreId)).orderBy(asc(stores.name)) : [];
+    const countRows = await db.select({ total: sql<number>`count(distinct ${products.id})` }).from(products).leftJoin(barcodes, eq(barcodes.productId, products.id)).where(conditions.length ? and(...conditions) : undefined);
+    const rows = await productQuery.where(conditions.length ? and(...conditions) : undefined).orderBy(asc(stores.name), asc(products.name), asc(products.id)).limit(input.pageSize).offset((input.page - 1) * input.pageSize);
 
-    const catalog = new Map<number, { id: number; name: string; sku: string | null; reference: string | null; category: string | null; variations: string | null; storeId: number; storeName: string; purchasePrice: string; sellingPrice: string; stockQuantity: number; barcodes: string[] }>();
+    const catalog = new Map<number, { id: number; name: string; sku: string | null; reference: string | null; category: string | null; variations: string | null; storeId: number; storeName: string; createdByUserId: number | null; purchasePrice: string | null; sellingPrice: string; stockQuantity: number; barcodes: string[] }>();
     rows.forEach(row => {
       const product = catalog.get(row.id) ?? {
         id: row.id,
@@ -224,7 +234,8 @@ export const inventoryRouter = router({
         variations: row.variations,
         storeId: row.storeId,
         storeName: row.storeName,
-        purchasePrice: row.purchasePrice,
+        createdByUserId: row.createdByUserId,
+        purchasePrice: canViewFinancials || row.createdByUserId === ctx.user.id ? row.purchasePrice : null,
         sellingPrice: row.sellingPrice,
         stockQuantity: row.stockQuantity,
         barcodes: [],
@@ -232,7 +243,32 @@ export const inventoryRouter = router({
       if (row.barcode) product.barcodes.push(row.barcode);
       catalog.set(row.id, product);
     });
-    return { stores: storeRows, products: Array.from(catalog.values()) };
+    return { stores: storeRows, products: Array.from(catalog.values()), total: Number(countRows[0]?.total ?? 0), page: input.page, pageSize: input.pageSize };
+  }),
+
+  productDrafts: protectedProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+    const db = await getDb(); requireDatabase(db);
+    requireBranchRole(ctx.user, input.storeId, ["admin", "cashier", "stock_manager"]);
+    const rows = await db.select({ id: productDrafts.id, storeId: productDrafts.storeId, payload: productDrafts.payload, updatedAt: productDrafts.updatedAt }).from(productDrafts).where(and(eq(productDrafts.userId, ctx.user.id), eq(productDrafts.storeId, input.storeId))).limit(1);
+    if (!rows[0]) return null;
+    const parsed = productDraftPayload.safeParse(JSON.parse(rows[0].payload));
+    return parsed.success ? { id: rows[0].id, storeId: rows[0].storeId, payload: parsed.data, updatedAt: rows[0].updatedAt } : null;
+  }),
+
+  saveProductDraft: protectedProcedure.input(saveProductDraftInput).mutation(async ({ ctx, input }) => {
+    const db = await getDb(); requireDatabase(db);
+    requireBranchRole(ctx.user, input.storeId, ["admin", "cashier", "stock_manager"]);
+    const payload = JSON.stringify(input.payload);
+    await db.insert(productDrafts).values({ userId: ctx.user.id, storeId: input.storeId, payload }).onDuplicateKeyUpdate({ set: { payload, updatedAt: new Date() } });
+    const [draft] = await db.select({ id: productDrafts.id }).from(productDrafts).where(and(eq(productDrafts.userId, ctx.user.id), eq(productDrafts.storeId, input.storeId))).limit(1);
+    return { id: draft?.id ?? null };
+  }),
+
+  deleteProductDraft: protectedProcedure.input(z.object({ storeId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+    const db = await getDb(); requireDatabase(db);
+    requireBranchRole(ctx.user, input.storeId, ["admin", "cashier", "stock_manager"]);
+    await db.delete(productDrafts).where(and(eq(productDrafts.userId, ctx.user.id), eq(productDrafts.storeId, input.storeId)));
+    return { success: true as const };
   }),
 
   /** Fast branch-only lookup for name, barcode, or SKU/reference scans. */
@@ -252,12 +288,12 @@ export const inventoryRouter = router({
   /** Detail follows the product's branch assignment and redacts costs/margins for cashiers. */
   productDetail: protectedProcedure.input(productDetailInput).query(async ({ ctx, input }) => {
     const db = await getDb(); requireDatabase(db);
-    const [product] = await db.select({ id: products.id, name: products.name, sku: products.sku, reference: products.reference, description: products.description, storeId: products.storeId, storeName: stores.name, purchasePrice: products.lastCostPrice, sellingPrice: products.retailPrice, stockQuantity: products.quantityOnHand }).from(products).innerJoin(stores, eq(products.storeId, stores.id)).where(eq(products.id, input.productId)).limit(1);
+    const [product] = await db.select({ id: products.id, name: products.name, sku: products.sku, reference: products.reference, description: products.description, storeId: products.storeId, storeName: stores.name, createdByUserId: products.createdByUserId, purchasePrice: products.lastCostPrice, sellingPrice: products.retailPrice, stockQuantity: products.quantityOnHand }).from(products).innerJoin(stores, eq(products.storeId, stores.id)).where(eq(products.id, input.productId)).limit(1);
     if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "Product not found." });
     const activeRole = isSuperAdmin(ctx.user) ? "super_admin" : requireBranchRole(ctx.user, product.storeId, ["admin", "cashier", "stock_manager", "supervisor"]);
-    const canViewFinancials = activeRole === "super_admin" || activeRole === "admin" || activeRole === "stock_manager" || activeRole === "supervisor";
+    const canViewFinancials = activeRole === "super_admin" || activeRole === "admin" || activeRole === "stock_manager" || activeRole === "supervisor" || (activeRole === "cashier" && product.createdByUserId === ctx.user.id);
     const productBarcodes = await db.select({ value: barcodes.value }).from(barcodes).where(eq(barcodes.productId, product.id)).orderBy(asc(barcodes.value));
-    const base = { id: product.id, name: product.name, sku: product.sku, reference: product.reference, description: product.description, storeId: product.storeId, storeName: product.storeName, stockQuantity: product.stockQuantity, barcodes: productBarcodes.map(row => row.value), canViewFinancials };
+    const base = { id: product.id, name: product.name, sku: product.sku, reference: product.reference, description: product.description, storeId: product.storeId, storeName: product.storeName, createdByUserId: product.createdByUserId, stockQuantity: product.stockQuantity, barcodes: productBarcodes.map(row => row.value), canViewFinancials };
     if (!canViewFinancials) return { ...base, sellingPrice: product.sellingPrice };
     const purchasePrice = Number(product.purchasePrice) || 0; const sellingPrice = Number(product.sellingPrice) || 0;
     return { ...base, purchasePrice: product.purchasePrice, sellingPrice: product.sellingPrice, profitMargin: sellingPrice - purchasePrice, profitMarginPercent: purchasePrice > 0 ? ((sellingPrice - purchasePrice) / purchasePrice) * 100 : null };
@@ -284,11 +320,11 @@ export const inventoryRouter = router({
     return match ?? null;
   }),
 
-  createProduct: stockProcedure.input(createProductInput).mutation(async ({ ctx, input }) => {
+  createProduct: roleProcedure("admin", "cashier", "stock_manager").input(createProductInput).mutation(async ({ ctx, input }) => {
     await ensureRetailBranches();
     const db = await getDb();
     requireDatabase(db);
-    const storeId = resolveInventoryStore(ctx.user, input.storeId) ?? input.storeId;
+    const storeId = resolveInventoryStore(ctx.user, input.storeId, ["admin", "cashier", "stock_manager"]) ?? input.storeId;
 
     return db.transaction(async tx => {
       const [store] = await tx.select({ id: stores.id }).from(stores).where(eq(stores.id, storeId)).limit(1);
@@ -303,6 +339,7 @@ export const inventoryRouter = router({
 
       const result = await tx.insert(products).values({
         storeId,
+        createdByUserId: ctx.user.id,
         name: input.name,
         sku: input.sku || null,
         reference: input.reference || input.sku || null,
@@ -338,21 +375,24 @@ export const inventoryRouter = router({
   adjustQuantity: roleProcedure("admin", "cashier").input(quantityAdjustmentInput).mutation(async ({ ctx, input }) => {
     const db = await getDb();
     requireDatabase(db);
-    const [product] = await db.select({ id: products.id, storeId: products.storeId }).from(products).where(eq(products.id, input.productId)).limit(1);
+    const [product] = await db.select({ id: products.id, storeId: products.storeId, createdByUserId: products.createdByUserId }).from(products).where(eq(products.id, input.productId)).limit(1);
     if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "The selected product no longer exists." });
-    requireBranchRole(ctx.user, product.storeId, ["admin", "cashier"]);
+    const role = requireBranchRole(ctx.user, product.storeId, ["admin", "cashier"]);
+    if (role === "cashier" && product.createdByUserId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Cashiers may adjust stock only for products they created." });
     await db.update(products).set({ quantityOnHand: input.stockQuantity }).where(eq(products.id, product.id));
     return { productId: product.id, stockQuantity: input.stockQuantity };
   }),
 
-  updateProduct: stockProcedure.input(updateProductInput).mutation(async ({ ctx, input }) => {
+  updateProduct: roleProcedure("admin", "cashier", "stock_manager").input(updateProductInput).mutation(async ({ ctx, input }) => {
     const db = await getDb();
     requireDatabase(db);
 
     return db.transaction(async tx => {
-      const [product] = await tx.select({ id: products.id, storeId: products.storeId }).from(products).where(eq(products.id, input.productId)).limit(1);
+      const [product] = await tx.select({ id: products.id, storeId: products.storeId, createdByUserId: products.createdByUserId }).from(products).where(eq(products.id, input.productId)).limit(1);
       if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "The selected product no longer exists." });
-      resolveInventoryStore(ctx.user, product.storeId);
+      resolveInventoryStore(ctx.user, product.storeId, ["admin", "cashier", "stock_manager"]);
+      const branchRole = isSuperAdmin(ctx.user) ? "super_admin" : ctx.user.branchRoles.find(assignment => assignment.storeId === product.storeId)?.role;
+      if (branchRole === "cashier" && product.createdByUserId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Cashiers may edit only products they created." });
 
       const [duplicateName] = await tx.select({ id: products.id }).from(products).where(and(eq(products.storeId, product.storeId), eq(products.name, input.name))).limit(1);
       if (duplicateName && duplicateName.id !== product.id) throw new TRPCError({ code: "CONFLICT", message: "A product with this name already exists in this branch." });
@@ -472,13 +512,15 @@ export const inventoryRouter = router({
     return { invoice, lines };
   }),
 
-  generateProductBarcode: stockProcedure.input(z.object({ productId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+  generateProductBarcode: roleProcedure("admin", "cashier", "stock_manager").input(z.object({ productId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
     const db = await getDb();
     requireDatabase(db);
     return db.transaction(async tx => {
-      const [product] = await tx.select({ id: products.id, storeId: products.storeId }).from(products).where(eq(products.id, input.productId)).limit(1);
+      const [product] = await tx.select({ id: products.id, storeId: products.storeId, createdByUserId: products.createdByUserId }).from(products).where(eq(products.id, input.productId)).limit(1);
       if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "The selected product no longer exists." });
-      resolveInventoryStore(ctx.user, product.storeId);
+      resolveInventoryStore(ctx.user, product.storeId, ["admin", "cashier", "stock_manager"]);
+      const branchRole = isSuperAdmin(ctx.user) ? "super_admin" : ctx.user.branchRoles.find(assignment => assignment.storeId === product.storeId)?.role;
+      if (branchRole === "cashier" && product.createdByUserId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Cashiers may manage barcodes only for products they created." });
       const [assigned] = await tx.select({ value: barcodes.value }).from(barcodes).where(eq(barcodes.productId, product.id)).limit(1);
       if (assigned) return { barcode: assigned.value };
       for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -492,14 +534,16 @@ export const inventoryRouter = router({
     });
   }),
 
-  assignLabelBarcode: stockProcedure
+  assignLabelBarcode: roleProcedure("admin", "cashier", "stock_manager")
     .input(z.object({ productId: z.number().int().positive(), barcode: z.string().trim().min(3).max(128) }))
     .mutation(async ({ ctx, input }) => {
       const db = await getDb();
       requireDatabase(db);
-      const [product] = await db.select({ id: products.id, storeId: products.storeId }).from(products).where(eq(products.id, input.productId)).limit(1);
+      const [product] = await db.select({ id: products.id, storeId: products.storeId, createdByUserId: products.createdByUserId }).from(products).where(eq(products.id, input.productId)).limit(1);
       if (!product) throw new TRPCError({ code: "NOT_FOUND", message: "The selected product no longer exists." });
-      resolveInventoryStore(ctx.user, product.storeId);
+      resolveInventoryStore(ctx.user, product.storeId, ["admin", "cashier", "stock_manager"]);
+      const branchRole = isSuperAdmin(ctx.user) ? "super_admin" : ctx.user.branchRoles.find(assignment => assignment.storeId === product.storeId)?.role;
+      if (branchRole === "cashier" && product.createdByUserId !== ctx.user.id) throw new TRPCError({ code: "FORBIDDEN", message: "Cashiers may manage barcodes only for products they created." });
       const [existing] = await db.select().from(barcodes).where(eq(barcodes.value, input.barcode)).limit(1);
       if (existing && existing.productId !== product.id) {
         throw new TRPCError({ code: "CONFLICT", message: "This barcode is already assigned to another product." });
@@ -643,6 +687,7 @@ export const inventoryRouter = router({
         if (!product) {
           const created = await tx.insert(products).values({
             storeId,
+            createdByUserId: ctx.user.id,
             name: line.productName,
             sku: line.reference || null,
             reference: line.reference || null,
