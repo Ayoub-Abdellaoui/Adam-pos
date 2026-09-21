@@ -1,0 +1,26 @@
+appId: com.adamstores.cloudpos
+productName: Cloud POS
+artifactName: Cloud-POS-${version}-${os}-${arch}.${ext}
+directories:
+  output: artifacts/desktop
+  buildResources: desktop/resources
+files:
+  - desktop/**
+  - package.json
+asar: true
+publish: null
+win:
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+mac:
+  category: public.app-category.business
+linux:
+  category: Office
+  target:
+    - AppImage
